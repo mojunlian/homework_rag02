@@ -269,7 +269,7 @@ class VectorStoreService:
             # 插入数据
             logger.info(f"Inserting {len(entities)} vectors")
             insert_result = collection.insert(entities)
-            
+            collection.flush()
             # 创建索引
             index_params = {
                 "metric_type": "COSINE",
