@@ -8,6 +8,9 @@ from pymilvus import connections, utility
 from pymilvus import Collection, DataType, FieldSchema, CollectionSchema
 from utils.config import VectorDBProvider, MILVUS_CONFIG  # Updated import
 from pypinyin import lazy_pinyin, Style
+from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings  # 添加嵌入函数导入
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,8 @@ class VectorDBConfig:
         self.provider = provider
         self.index_mode = index_mode
         self.milvus_uri = MILVUS_CONFIG["uri"]
+        # Chroma配置
+        self.chroma_persist_dir = "03-vector-store/chroma"
 
     def _get_milvus_index_type(self, index_mode: str) -> str:
         """
@@ -106,6 +111,10 @@ class VectorStoreService:
         # 根据不同的数据库进行索引
         if config.provider == VectorDBProvider.MILVUS:
             result = self._index_to_milvus(embeddings_data, config)
+        elif config.provider == VectorDBProvider.CHROMA:
+            result = self._index_to_chroma(embeddings_data, config)
+        else:
+            raise ValueError(f"Unsupported vector database provider: {config.provider}")
         
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
@@ -168,9 +177,28 @@ class VectorStoreService:
             # Replace hyphens with underscores in the base name
             base_name = base_name.replace('-', '_')
             
-            # Ensure the collection name starts with a letter or underscore
-            if not base_name[0].isalpha() and base_name[0] != '_':
-                base_name = f"_{base_name}"
+            # Ensure the collection name starts with a letter or number (Chroma requirement)
+            # and only contains alphanumeric, underscores, or hyphens
+            if not base_name[0].isalnum():
+                # If first character is not alphanumeric, add a letter prefix
+                base_name = f"doc_{base_name}"
+            
+            # Remove any invalid characters for Chroma
+            base_name = ''.join(c for c in base_name if c.isalnum() or c in ['_', '-'])
+            
+            # Truncate if necessary (Chroma requires 3-63 characters)
+            if len(base_name) < 3:
+                base_name = f"{base_name}___"[:63]
+            elif len(base_name) > 63:
+                base_name = base_name[:63]
+            
+            # Ensure it doesn't end with non-alphanumeric
+            while base_name and not base_name[-1].isalnum():
+                base_name = base_name[:-1]
+            
+            # Ensure it doesn't start with non-alphanumeric (should already be handled)
+            while base_name and not base_name[0].isalnum():
+                base_name = base_name[1:]
             
             # Get embedding provider
             embedding_provider = embeddings_data.get("embedding_provider", "unknown")
@@ -290,6 +318,121 @@ class VectorStoreService:
         
         finally:
             connections.disconnect("default")
+            
+    def _index_to_chroma(self, embeddings_data: Dict[str, Any], config: VectorDBConfig) -> Dict[str, Any]:
+        """
+        将嵌入向量索引到Chroma数据库
+        
+        参数:
+            embeddings_data: 嵌入向量数据
+            config: 向量数据库配置对象
+            
+        返回:
+            索引结果信息字典
+        """
+        try:
+            
+            # 使用 filename 作为 collection 名称前缀
+            filename = embeddings_data.get("filename", "")
+            # 如果有 .pdf 后缀，移除它
+            base_name = filename.replace('.pdf', '') if filename else "doc"
+            
+            # Convert Chinese characters to pinyin
+            base_name = ''.join(lazy_pinyin(base_name, style=Style.NORMAL))
+            
+            # Replace hyphens with underscores in the base name
+            base_name = base_name.replace('-', '_')
+            
+            # Ensure the collection name starts with a letter or number (Chroma requirement)
+            # and only contains alphanumeric, underscores, or hyphens
+            if not base_name[0].isalnum():
+                # If first character is not alphanumeric, add a letter prefix
+                base_name = f"doc_{base_name}"
+            
+            # Remove any invalid characters for Chroma
+            base_name = ''.join(c for c in base_name if c.isalnum() or c in ['_', '-'])
+            
+            # Truncate if necessary (Chroma requires 3-63 characters)
+            if len(base_name) < 3:
+                base_name = f"{base_name}___"[:63]
+            elif len(base_name) > 63:
+                base_name = base_name[:63]
+            
+            # Ensure it doesn't end with non-alphanumeric
+            while base_name and not base_name[-1].isalnum():
+                base_name = base_name[:-1]
+            
+            # Ensure it doesn't start with non-alphanumeric (should already be handled)
+            while base_name and not base_name[0].isalnum():
+                base_name = base_name[1:]
+            
+            # Get embedding provider
+            embedding_provider = embeddings_data.get("embedding_provider", "unknown")
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            collection_name = f"{base_name}_{embedding_provider}_{timestamp}"
+            
+            # 准备数据为LangChain Document格式
+            documents = []
+            embeddings = []
+            metadatas = []
+            
+            for emb in embeddings_data["embeddings"]:
+                content = emb["metadata"].get("content", "")
+                metadata = {
+                    "document_name": embeddings_data.get("filename", ""),
+                    "chunk_id": emb["metadata"].get("chunk_id", 0),
+                    "total_chunks": emb["metadata"].get("total_chunks", 0),
+                    "word_count": emb["metadata"].get("word_count", 0),
+                    "page_number": emb["metadata"].get("page_number", 0),
+                    "page_range": emb["metadata"].get("page_range", ""),
+                    "embedding_provider": embeddings_data.get("embedding_provider", ""),
+                    "embedding_model": embeddings_data.get("embedding_model", ""),
+                    "embedding_timestamp": emb["metadata"].get("embedding_timestamp", "")
+                }
+                
+                documents.append(content)
+                embeddings.append(emb.get("embedding", []))
+                metadatas.append(metadata)
+            
+            logger.info(f"Creating Chroma collection: {collection_name}")
+            
+            # 确保Chroma持久化目录存在
+            os.makedirs(config.chroma_persist_dir, exist_ok=True)
+            
+            # 获取向量维度
+            vector_dim = len(embeddings[0]) if embeddings else 0
+            if not vector_dim:
+                raise ValueError("No embeddings found or embeddings have zero dimension")
+            
+            # 创建自定义嵌入函数实例
+            embedding_function = DummyEmbeddingFunction(vector_dim)
+            
+            # 使用预先计算好的embeddings创建Chroma实例
+            chroma_db = Chroma(
+                collection_name=collection_name,
+                persist_directory=config.chroma_persist_dir,
+                embedding_function=embedding_function  # 添加嵌入函数
+            )
+            
+            # 向Chroma添加文档和向量
+            logger.info(f"Inserting {len(embeddings)} vectors into Chroma")
+            chroma_db.add_texts(
+                texts=documents,
+                embeddings=embeddings,
+                metadatas=metadatas
+            )
+            
+            # 持久化到磁盘
+            chroma_db.persist()
+            
+            return {
+                "index_size": len(embeddings),
+                "collection_name": collection_name
+            }
+            
+        except Exception as e:
+            logger.error(f"Error indexing to Chroma: {str(e)}")
+            raise
 
     def list_collections(self, provider: str) -> List[str]:
         """
@@ -308,6 +451,20 @@ class VectorStoreService:
                 return collections
             finally:
                 connections.disconnect("default")
+        elif provider == VectorDBProvider.CHROMA:
+            try:
+                # 确保Chroma持久化目录存在
+                chroma_persist_dir = "03-vector-store/chroma"
+                if os.path.exists(chroma_persist_dir):
+                    # 使用Chroma客户端列出集合
+                    from chromadb import PersistentClient
+                    client = PersistentClient(path=chroma_persist_dir)
+                    collections = [col.name for col in client.list_collections()]
+                    return collections
+                return []
+            except Exception as e:
+                logger.error(f"Error listing Chroma collections: {str(e)}")
+                return []
         return []
 
     def delete_collection(self, provider: str, collection_name: str) -> bool:
@@ -328,6 +485,20 @@ class VectorStoreService:
                 return True
             finally:
                 connections.disconnect("default")
+        elif provider == VectorDBProvider.CHROMA:
+            try:
+                # 确保Chroma持久化目录存在
+                chroma_persist_dir = "03-vector-store/chroma"
+                if os.path.exists(chroma_persist_dir):
+                    # 使用Chroma客户端删除集合
+                    from chromadb import PersistentClient
+                    client = PersistentClient(path=chroma_persist_dir)
+                    client.delete_collection(collection_name)
+                    return True
+                return False
+            except Exception as e:
+                logger.error(f"Error deleting Chroma collection: {str(e)}")
+                return False
         return False
 
     def get_collection_info(self, provider: str, collection_name: str) -> Dict[str, Any]:
@@ -352,4 +523,66 @@ class VectorStoreService:
                 }
             finally:
                 connections.disconnect("default")
+        elif provider == VectorDBProvider.CHROMA:
+            try:
+                # 确保Chroma持久化目录存在
+                chroma_persist_dir = "03-vector-store/chroma"
+                if os.path.exists(chroma_persist_dir):
+                    # 使用Chroma客户端获取集合信息
+                    from chromadb import PersistentClient
+                    client = PersistentClient(path=chroma_persist_dir)
+                    
+                    # 获取集合
+                    collection = client.get_collection(collection_name)
+                    if collection:
+                        # 获取集合大小
+                        num_entities = collection.count()
+                        
+                        # 获取集合的schema信息（Chroma的schema结构与Milvus不同）
+                        # Chroma使用metadata和embedding向量，没有传统的schema
+                        schema_info = {
+                            "fields": [
+                                {
+                                    "name": "id",
+                                    "type": "string",
+                                    "is_primary": True
+                                },
+                                {
+                                    "name": "embedding",
+                                    "type": "embedding"
+                                },
+                                {
+                                    "name": "metadata",
+                                    "type": "dict"
+                                },
+                                {
+                                    "name": "document",
+                                    "type": "string"
+                                }
+                            ]
+                        }
+                        
+                        return {
+                            "name": collection_name,
+                            "num_entities": num_entities,
+                            "schema": schema_info
+                        }
+                return {}
+            except Exception as e:
+                logger.error(f"Error getting Chroma collection info: {str(e)}")
+                return {}
         return {}
+
+# 自定义嵌入函数类，用于预计算的嵌入向量
+class DummyEmbeddingFunction(Embeddings):
+    def __init__(self, embedding_dimension: int):
+        self.embedding_dimension = embedding_dimension
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        # 因为我们使用预计算的嵌入，所以这个方法不会被实际调用
+        # 但为了满足接口要求，我们返回一些虚拟的嵌入
+        return [[0.0] * self.embedding_dimension for _ in texts]
+    
+    def embed_query(self, text: str) -> List[float]:
+        # 同样，这个方法也不会被实际调用
+        return [0.0] * self.embedding_dimension

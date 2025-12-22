@@ -32,7 +32,8 @@ class SearchService:
             List[Dict[str, str]]: 支持的向量数据库提供商列表
         """
         return [
-            {"id": VectorDBProvider.MILVUS.value, "name": "Milvus"}
+            {"id": VectorDBProvider.MILVUS.value, "name": "Milvus"},
+            {"id": VectorDBProvider.CHROMA.value, "name": "Chroma"}
         ]
 
     def list_collections(self, provider: str = VectorDBProvider.MILVUS.value) -> List[Dict[str, Any]]:
@@ -48,33 +49,62 @@ class SearchService:
         Raises:
             Exception: 连接或查询集合时发生错误
         """
-        try:
-            connections.connect(
-                alias="default",
-                uri=self.milvus_uri
-            )
-            
-            collections = []
-            collection_names = utility.list_collections()
-            
-            for name in collection_names:
-                try:
-                    collection = Collection(name)
-                    collections.append({
-                        "id": name,
-                        "name": name,
-                        "count": collection.num_entities
-                    })
-                except Exception as e:
-                    logger.error(f"Error getting info for collection {name}: {str(e)}")
-            
-            return collections
-            
-        except Exception as e:
-            logger.error(f"Error listing collections: {str(e)}")
-            raise
-        finally:
-            connections.disconnect("default")
+        if provider == VectorDBProvider.MILVUS.value:
+            try:
+                connections.connect(
+                    alias="default",
+                    uri=self.milvus_uri
+                )
+                
+                collections = []
+                collection_names = utility.list_collections()
+                
+                for name in collection_names:
+                    try:
+                        collection = Collection(name)
+                        collections.append({
+                            "id": name,
+                            "name": name,
+                            "count": collection.num_entities
+                        })
+                    except Exception as e:
+                        logger.error(f"Error getting info for collection {name}: {str(e)}")
+                
+                return collections
+                
+            except Exception as e:
+                logger.error(f"Error listing collections: {str(e)}")
+                raise
+            finally:
+                connections.disconnect("default")
+        elif provider == VectorDBProvider.CHROMA.value:
+            try:
+                from chromadb import PersistentClient
+                
+                chroma_persist_dir = "03-vector-store/chroma"
+                client = PersistentClient(path=chroma_persist_dir)
+                
+                collections = []
+                collection_names = [col.name for col in client.list_collections()]
+                
+                for name in collection_names:
+                    try:
+                        collection = client.get_collection(name)
+                        collections.append({
+                            "id": name,
+                            "name": name,
+                            "count": collection.count()
+                        })
+                    except Exception as e:
+                        logger.error(f"Error getting info for collection {name}: {str(e)}")
+                
+                return collections
+                
+            except Exception as e:
+                logger.error(f"Error listing Chroma collections: {str(e)}")
+                raise
+        else:
+            raise ValueError(f"Unsupported provider: {provider}")
 
     def save_search_results(self, query: str, collection_id: str, results: List[Dict[str, Any]]) -> str:
         """
@@ -123,7 +153,8 @@ class SearchService:
                     top_k: int = 3, 
                     threshold: float = 0.7,
                     word_count_threshold: int = 20,
-                    save_results: bool = False) -> Dict[str, Any]:
+                    save_results: bool = False,
+                    provider: str = VectorDBProvider.MILVUS.value) -> Dict[str, Any]:
         """
         执行向量搜索
         
@@ -134,6 +165,7 @@ class SearchService:
             threshold (float): 相似度阈值，低于此值的结果将被过滤，默认为0.7
             word_count_threshold (int): 文本字数阈值，低于此值的结果将被过滤，默认为20
             save_results (bool): 是否保存搜索结果，默认为False
+            provider (str): 向量数据库提供商，默认为Milvus
             
         Returns:
             Dict[str, Any]: 包含搜索结果的字典，如果保存结果则包含保存路径
@@ -141,6 +173,7 @@ class SearchService:
         Raises:
             Exception: 搜索过程中发生错误
         """
+        processed_results = []
         try:
             # 添加参数日志
             logger.info(f"Search parameters:")
@@ -150,97 +183,178 @@ class SearchService:
             logger.info(f"- Threshold: {threshold}")
             logger.info(f"- Word Count Threshold: {word_count_threshold}")
             logger.info(f"- Save Results: {save_results} (type: {type(save_results)})")
+            logger.info(f"- Provider: {provider}")
 
-            logger.info(f"Starting search with parameters - Collection: {collection_id}, Query: {query}, Top K: {top_k}")
+            logger.info(f"Starting search with parameters - Collection: {collection_id}, Query: {query}, Top K: {top_k}, Provider: {provider}")
             
-            # 连接到 Milvus
-            logger.info(f"Connecting to Milvus at {self.milvus_uri}")
-            connections.connect(
-                alias="default",
-                uri=self.milvus_uri
-            )
+            if provider == VectorDBProvider.MILVUS.value:
+                # 连接到 Milvus
+                logger.info(f"Connecting to Milvus at {self.milvus_uri}")
+                connections.connect(
+                    alias="default",
+                    uri=self.milvus_uri
+                )
+                
+                # 获取collection
+                logger.info(f"Loading collection: {collection_id}")
+                collection = Collection(collection_id)
+                collection.load()
+                
+                # 记录collection的基本信息
+                logger.info(f"Collection info - Entities: {collection.num_entities}")
+                
+                # 从collection中读取embedding配置
+                logger.info("Querying sample entity for embedding configuration")
+                sample_entity = collection.query(
+                    expr="id >= 0", 
+                    output_fields=["embedding_provider", "embedding_model"],
+                    limit=1
+                )
+                if not sample_entity:
+                    logger.error(f"Collection {collection_id} is empty")
+                    raise ValueError(f"Collection {collection_id} is empty")
+                
+                logger.info(f"Sample entity configuration: {sample_entity[0]}")
+                
+                # 使用collection中存储的配置创建查询向量
+                logger.info("Creating query embedding")
+                query_embedding = self.embedding_service.create_single_embedding(
+                    query,
+                    provider=sample_entity[0]["embedding_provider"],
+                    model=sample_entity[0]["embedding_model"]
+                )
+                logger.info(f"Query embedding created with dimension: {len(query_embedding)}")
+                
+                # 执行搜索
+                search_params = {
+                    "metric_type": "COSINE",
+                    "params": {"nprobe": 10}
+                }
+                logger.info(f"Executing search with params: {search_params}")
+                logger.info(f"Word count threshold filter: word_count >= {word_count_threshold}")
+                
+                results = collection.search(
+                    data=[query_embedding],
+                    anns_field="vector",
+                    param=search_params,
+                    limit=top_k,
+                    expr=f"word_count >= {word_count_threshold}",
+                    output_fields=[
+                        "content",
+                        "document_name",
+                        "chunk_id",
+                        "total_chunks",
+                        "word_count",
+                        "page_number",
+                        "page_range",
+                        "embedding_provider",
+                        "embedding_model",
+                        "embedding_timestamp"
+                    ]
+                )
+                
+                # 处理结果
+                logger.info(f"Raw search results count: {len(results[0])}")
+                
+                for hits in results:
+                    for hit in hits:
+                        logger.info(f"Processing hit - Score: {hit.score}, Word Count: {hit.entity.get('word_count')}")
+                        if hit.score >= threshold:
+                            processed_results.append({
+                                "text": hit.entity.content,
+                                "score": float(hit.score),
+                                "metadata": {
+                                    "source": hit.entity.document_name,
+                                    "page": hit.entity.page_number,
+                                    "chunk": hit.entity.chunk_id,
+                                    "total_chunks": hit.entity.total_chunks,
+                                    "page_range": hit.entity.page_range,
+                                    "embedding_provider": hit.entity.embedding_provider,
+                                    "embedding_model": hit.entity.embedding_model,
+                                    "embedding_timestamp": hit.entity.embedding_timestamp
+                                }
+                            })
             
-            # 获取collection
-            logger.info(f"Loading collection: {collection_id}")
-            collection = Collection(collection_id)
-            collection.load()
-            
-            # 记录collection的基本信息
-            logger.info(f"Collection info - Entities: {collection.num_entities}")
-            
-            # 从collection中读取embedding配置
-            logger.info("Querying sample entity for embedding configuration")
-            sample_entity = collection.query(
-                expr="id >= 0", 
-                output_fields=["embedding_provider", "embedding_model"],
-                limit=1
-            )
-            if not sample_entity:
-                logger.error(f"Collection {collection_id} is empty")
-                raise ValueError(f"Collection {collection_id} is empty")
-            
-            logger.info(f"Sample entity configuration: {sample_entity[0]}")
-            
-            # 使用collection中存储的配置创建查询向量
-            logger.info("Creating query embedding")
-            query_embedding = self.embedding_service.create_single_embedding(
-                query,
-                provider=sample_entity[0]["embedding_provider"],
-                model=sample_entity[0]["embedding_model"]
-            )
-            logger.info(f"Query embedding created with dimension: {len(query_embedding)}")
-            
-            # 执行搜索
-            search_params = {
-                "metric_type": "COSINE",
-                "params": {"nprobe": 10}
-            }
-            logger.info(f"Executing search with params: {search_params}")
-            logger.info(f"Word count threshold filter: word_count >= {word_count_threshold}")
-            
-            results = collection.search(
-                data=[query_embedding],
-                anns_field="vector",
-                param=search_params,
-                limit=top_k,
-                expr=f"word_count >= {word_count_threshold}",
-                output_fields=[
-                    "content",
-                    "document_name",
-                    "chunk_id",
-                    "total_chunks",
-                    "word_count",
-                    "page_number",
-                    "page_range",
-                    "embedding_provider",
-                    "embedding_model",
-                    "embedding_timestamp"
-                ]
-            )
-            
-            # 处理结果
-            processed_results = []
-            logger.info(f"Raw search results count: {len(results[0])}")
-            
-            for hits in results:
-                for hit in hits:
-                    logger.info(f"Processing hit - Score: {hit.score}, Word Count: {hit.entity.get('word_count')}")
-                    if hit.score >= threshold:
+            elif provider == VectorDBProvider.CHROMA.value:
+                # 连接到 Chroma
+                logger.info(f"Connecting to Chroma")
+                from chromadb import PersistentClient
+                
+                chroma_persist_dir = "03-vector-store/chroma"
+                client = PersistentClient(path=chroma_persist_dir)
+                
+                # 获取collection
+                logger.info(f"Getting collection: {collection_id}")
+                collection = client.get_collection(collection_id)
+                
+                # 记录collection的基本信息
+                logger.info(f"Collection info - Entities: {collection.count()}")
+                
+                # 从collection中读取embedding配置（使用第一个文档的metadata）
+                logger.info("Querying sample entity for embedding configuration")
+                sample_result = collection.query(
+                    query_texts=[""],  # 空查询获取第一个文档
+                    n_results=1,
+                    include=["metadatas"]
+                )
+                
+                if not sample_result["metadatas"] or not sample_result["metadatas"][0]:
+                    logger.error(f"Collection {collection_id} is empty or no metadata available")
+                    raise ValueError(f"Collection {collection_id} is empty or no metadata available")
+                
+                sample_metadata = sample_result["metadatas"][0][0]
+                logger.info(f"Sample entity configuration: {sample_metadata}")
+                
+                # 使用collection中存储的配置创建查询向量
+                logger.info("Creating query embedding")
+                query_embedding = self.embedding_service.create_single_embedding(
+                    query,
+                    provider=sample_metadata["embedding_provider"],
+                    model=sample_metadata["embedding_model"]
+                )
+                logger.info(f"Query embedding created with dimension: {len(query_embedding)}")
+                
+                # 执行搜索
+                logger.info(f"Executing search with top_k: {top_k}")
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k,
+                    include=["documents", "metadatas", "distances"]
+                )
+                
+                # 处理结果
+                logger.info(f"Raw search results count: {len(results['documents'][0])}")
+                
+                documents = results["documents"][0]
+                metadatas = results["metadatas"][0]
+                distances = results["distances"][0]
+                
+                for doc, metadata, distance in zip(documents, metadatas, distances):
+                    # Chroma返回的是距离，需要转换为相似度（1 - distance）
+                    score = 1 - distance
+                    logger.info(f"Processing hit - Score: {score}, Distance: {distance}")
+                    
+                    # 检查word_count阈值
+                    word_count = metadata.get("word_count", 0)
+                    if score >= threshold and word_count >= word_count_threshold:
                         processed_results.append({
-                            "text": hit.entity.content,
-                            "score": float(hit.score),
+                            "text": doc,
+                            "score": float(score),
                             "metadata": {
-                                "source": hit.entity.document_name,
-                                "page": hit.entity.page_number,
-                                "chunk": hit.entity.chunk_id,
-                                "total_chunks": hit.entity.total_chunks,
-                                "page_range": hit.entity.page_range,
-                                "embedding_provider": hit.entity.embedding_provider,
-                                "embedding_model": hit.entity.embedding_model,
-                                "embedding_timestamp": hit.entity.embedding_timestamp
+                                "source": metadata["document_name"],
+                                "page": metadata["page_number"],
+                                "chunk": metadata["chunk_id"],
+                                "total_chunks": metadata["total_chunks"],
+                                "page_range": metadata["page_range"],
+                                "embedding_provider": metadata["embedding_provider"],
+                                "embedding_model": metadata["embedding_model"],
+                                "embedding_timestamp": metadata["embedding_timestamp"]
                             }
                         })
-
+            
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+            
             response_data = {"results": processed_results}
             
             # 添加详细的保存逻辑日志
@@ -267,4 +381,5 @@ class SearchService:
             logger.error(f"Error performing search: {str(e)}")
             raise
         finally:
-            connections.disconnect("default") 
+            if provider == VectorDBProvider.MILVUS.value:
+                connections.disconnect("default") 

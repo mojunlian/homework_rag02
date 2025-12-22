@@ -43,10 +43,12 @@ const Indexing = () => {
     fetchCollections();
   }, []);
 
+  // 当选择的向量数据库改变时，更新索引模式为该数据库的第一个可用模式
   useEffect(() => {
-    // 当数据库改变时，重置索引模式为该数据库的第一个可用模式
-    setIndexMode(dbConfigs[vectorDb].modes[0]);
-  }, [vectorDb]);
+    if (dbConfigs[selectedProvider]) {
+      setIndexMode(dbConfigs[selectedProvider].modes[0]);
+    }
+  }, [selectedProvider]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -110,7 +112,7 @@ const Indexing = () => {
         },
         body: JSON.stringify({
           fileId: embeddingFile,
-          vectorDb,
+          vectorDb: selectedProvider, // 使用selectedProvider而不是vectorDb
           indexMode
         }),
       });
@@ -223,7 +225,7 @@ const Indexing = () => {
                 onChange={(e) => setIndexMode(e.target.value)}
                 className="block w-full p-2 border rounded"
               >
-                {dbConfigs[vectorDb].modes.map(mode => (
+                {dbConfigs[selectedProvider]?.modes?.map(mode => (
                   <option key={mode} value={mode}>
                     {mode.toUpperCase()}
                   </option>

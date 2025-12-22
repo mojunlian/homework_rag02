@@ -26,6 +26,11 @@ const EmbeddingFile = () => {
       { value: 'sentence-transformers/all-mpnet-base-v2', label: 'all-mpnet-base-v2' },
       { value: 'sentence-transformers/all-MiniLM-L6-v2', label: 'all-MiniLM-L6-v2' },
       { value: 'google-bert/bert-base-uncased', label: 'bert-base-uncased' }
+    ],
+    m3e: [
+      { value: 'moka-ai/m3e-base', label: 'm3e-base' },
+      { value: 'moka-ai/m3e-small', label: 'm3e-small' },
+      { value: 'moka-ai/m3e-large', label: 'm3e-large' }
     ]
   };
 
@@ -301,6 +306,7 @@ const EmbeddingFile = () => {
                 <option value="openai">OpenAI</option>
                 <option value="bedrock">Bedrock</option>
                 <option value="huggingface">HuggingFace</option>
+                <option value="m3e">M3E</option>
               </select>
             </div>
 

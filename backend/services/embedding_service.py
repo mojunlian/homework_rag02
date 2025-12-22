@@ -15,6 +15,7 @@ class EmbeddingProvider(str, Enum):
     OPENAI = "openai"
     BEDROCK = "bedrock"
     HUGGINGFACE = "huggingface"
+    M3E = "m3e"
 
 class EmbeddingConfig:
     """
@@ -275,6 +276,15 @@ class EmbeddingFactory:
             
         elif config.provider == EmbeddingProvider.HUGGINGFACE:
             model_name = get_huggingface_model_path(config.model_name)
+            return HuggingFaceEmbeddings(
+                model_name=model_name
+            )
+        
+        elif config.provider == EmbeddingProvider.M3E:
+            # M3E模型使用HuggingFaceEmbeddings实现
+            # 默认使用moka-ai/m3e-base，如果用户指定了其他模型则使用用户指定的
+            model_name = config.model_name if config.model_name else "moka-ai/m3e-base"
+            model_name = get_huggingface_model_path(model_name)
             return HuggingFaceEmbeddings(
                 model_name=model_name
             )
