@@ -4,94 +4,86 @@ from datetime import datetime
 from typing import List, Dict, Optional
 import logging
 from openai import OpenAI
+from pymilvus import MilvusClient, model
+import torch
 
 logger = logging.getLogger(__name__)
 
 class FinancialStandardizationService:
     """
     金融术语标准化服务类：负责金融实体的识别与标准化
-    使用 LLM 进行命名实体识别 (NER) 和术语标准化
+    使用 LLM 进行命名实体识别 (NER)
+    结合 Milvus 向量检索 + LLM 进行术语标准化 (RAG)
     """
-    def __init__(self):
+    def __init__(self, milvus_uri: str = "http://localhost:19530", collection_name: str = "financial_terms"):
         self.default_entity_types = [
             "金融机构",
             "金融产品",
             "货币单位",
             "交易类型",
             "财务指标",
-            "法律法规"
+            "法律法规",
+            "其他"
         ]
         
+        # 初始化 Milvus 客户端
+        try:
+            self.client = MilvusClient(uri=milvus_uri)
+            self.collection_name = collection_name
+            if not self.client.has_collection(self.collection_name):
+                logger.warning(f"Collection {self.collection_name} not found in Milvus. Standardization may rely solely on LLM.")
+        except Exception as e:
+            logger.error(f"Failed to connect to Milvus: {e}")
+            self.client = None
+
+        # 初始化 Embedding 函数 (保持与 import_financial_data.py 一致)
+        try:
+            self.embedding_function = model.dense.SentenceTransformerEmbeddingFunction(
+                model_name='BAAI/bge-m3',
+                device='cuda:0' if torch.cuda.is_available() else 'cpu',
+                trust_remote_code=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            self.embedding_function = None
+
     def get_entity_types(self) -> List[str]:
         """获取支持的实体类型"""
         return self.default_entity_types
 
-    def recognize_entities(self, text: str, entity_types: List[str] = None, provider: str = "deepseek", model_name: str = "deepseek-v3", api_key: Optional[str] = None) -> List[Dict]:
+    def search_similar_terms(self, query: str, limit: int = 5) -> List[Dict]:
         """
-        识别文本中的金融实体
+        在 Milvus 中搜索相似的标准术语
         """
+        if not self.client or not self.embedding_function:
+            logger.warning("Milvus client or embedding function not initialized. Skipping vector search.")
+            return []
+
         try:
-            if not entity_types:
-                entity_types = self.default_entity_types
-
-            if not api_key:
-                api_key = os.getenv("DEEPSEEK_API_KEY")
-                if not api_key:
-                    raise ValueError("DeepSeek API key not provided")
-
-            client = OpenAI(
-                api_key=api_key,
-                base_url="https://api.deepseek.com"
+            query_embeddings = self.embedding_function([query])
+            
+            search_result = self.client.search(
+                collection_name=self.collection_name,
+                data=[query_embeddings[0].tolist()],
+                limit=limit,
+                output_fields=["term", "category"]
             )
-
-            types_str = "、".join(entity_types)
-            prompt = f"""你是一个金融领域的专家。请从以下文本中识别出属于以下类型的金融实体：{types_str}。
             
-            文本：
-            {text}
-            
-            请直接以 JSON 数组格式返回结果，每个对象包含 'entity' (实体文本) 和 'type' (实体类型) 两个字段。不要包含任何其他解释。
-            示例格式：
-            [
-                {{"entity": "工商银行", "type": "金融机构"}},
-                {{"entity": "余额宝", "type": "金融产品"}}
-            ]
-            """
-
-            messages = [
-                {"role": "system", "content": "你是一个专业的金融文本分析助手。"},
-                {"role": "user", "content": prompt}
-            ]
-
-            response = client.chat.completions.create(
-                model="deepseek-chat", # 使用 deepseek-v3 的 API 名称
-                messages=messages,
-                temperature=0.1, # 降低随机性
-                max_tokens=1024,
-                response_format={"type": "json_object"} if provider == "openai" else None # DeepSeek 暂时不一定完全支持这个参数，先手动解析
-            )
-
-            content = response.choices[0].message.content.strip()
-            
-            # 清理可能的 Markdown 格式
-            if content.startswith("```json"):
-                content = content.replace("```json", "", 1).rsplit("```", 1)[0].strip()
-            elif content.startswith("```"):
-                content = content.replace("```", "", 1).rsplit("```", 1)[0].strip()
-
-            entities = json.loads(content)
-            if isinstance(entities, dict) and "entities" in entities:
-                entities = entities["entities"]
-            
-            return entities
-
+            results = []
+            for hit in search_result[0]:
+                results.append({
+                    "term": hit['entity'].get('term'),
+                    "category": hit['entity'].get('category'),
+                    "distance": float(hit['distance'])
+                })
+            return results
         except Exception as e:
-            logger.error(f"Error in recognize_entities: {str(e)}")
-            raise
+            logger.error(f"Error in search_similar_terms: {e}")
+            return []
 
-    def standardize_entity(self, entity: str, entity_type: str, provider: str = "deepseek", model_name: str = "deepseek-v3", api_key: Optional[str] = None) -> Dict:
+    def search_and_explain(self, text: str, provider: str = "deepseek", model_name: str = "deepseek-v3", api_key: Optional[str] = None) -> Dict:
         """
-        标准化单个金融实体
+        直接在 Milvus 中搜索相似术语，并调用 LLM 解释中文含义
         """
         try:
             if not api_key:
@@ -104,47 +96,50 @@ class FinancialStandardizationService:
                 base_url="https://api.deepseek.com"
             )
 
-            prompt = f"""你是一个金融术语标准化专家。请将以下识别到的实体进行标准化。
+            # 1. 向量检索
+            candidates = self.search_similar_terms(text, limit=10)
+            candidates_str = ""
+            if candidates:
+                candidates_str = "参考标准术语库中的相关术语：\n"
+                for c in candidates:
+                    candidates_str += f"- {c['term']} (类别: {c['category']}, 相似度: {c['distance']:.4f})\n"
+            else:
+                candidates_str = "未在标准术语库中找到相关术语。"
+
+            # 2. LLM 解释
+            explain_prompt = f"""你是一个金融领域的专家。用户输入了一个查询："{text}"。
             
-            实体：{entity}
-            类型：{entity_type}
+            {candidates_str}
             
-            请返回一个 JSON 对象，包含以下字段：
-            - 'original': 原始实体文本
-            - 'standardized': 标准化后的正式术语（如：缩写转全称，别名转官方名称）
-            - 'explanation': 简短的标准化原因说明
+            请根据用户的查询和上述参考信息（如果有），用中文详细解释该查询的含义。
+            如果查询是一个英文术语，请给出中文翻译和定义。
+            如果查询是一个中文术语，请给出详细的定义和背景。
+            如果参考信息中有相关的标准术语，请在解释中引用并对比。
             
-            示例：
-            {{
-                "original": "工行",
-                "standardized": "中国工商银行",
-                "explanation": "将常用简称转换为官方全称"
-            }}
+            请直接返回解释内容，不需要包含 JSON 格式，直接输出 Markdown 格式的文本。
             """
 
             messages = [
-                {"role": "system", "content": "你是一个专业的金融术语标准化助手。"},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "你是一个专业的金融知识助手。"},
+                {"role": "user", "content": explain_prompt}
             ]
 
             response = client.chat.completions.create(
                 model="deepseek-chat",
                 messages=messages,
-                temperature=0.1,
-                max_tokens=512
+                temperature=0.3,
+                max_tokens=1024
             )
 
-            content = response.choices[0].message.content.strip()
+            explanation = response.choices[0].message.content.strip()
+            logger.info(f"LLM Response: {explanation}")
             
-            # 清理可能的 Markdown 格式
-            if content.startswith("```json"):
-                content = content.replace("```json", "", 1).rsplit("```", 1)[0].strip()
-            elif content.startswith("```"):
-                content = content.replace("```", "", 1).rsplit("```", 1)[0].strip()
-
-            result = json.loads(content)
-            return result
+            return {
+                "query": text,
+                "candidates": candidates,
+                "explanation": explanation
+            }
 
         except Exception as e:
-            logger.error(f"Error in standardize_entity: {str(e)}")
+            logger.error(f"Error in search_and_explain: {str(e)}")
             raise

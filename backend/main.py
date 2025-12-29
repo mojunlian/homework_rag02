@@ -975,43 +975,16 @@ async def get_search_result(file_id: str):
         raise HTTPException(status_code=500, detail=str(e)) 
 
 # 金融术语标准化相关接口
-@app.get("/financial/types")
-async def get_financial_types():
-    """获取金融术语类型"""
-    try:
-        service = FinancialStandardizationService()
-        types = service.get_entity_types()
-        return {"types": types}
-    except Exception as e:
-        logger.error(f"Error getting financial types: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/financial/recognize")
-async def recognize_financial_entities(
+@app.post("/financial/explain")
+async def explain_financial_term(
     text: str = Body(...),
-    entity_types: List[str] = Body(None),
     api_key: Optional[str] = Body(None)
 ):
-    """识别金融实体"""
+    """搜索并解释金融术语"""
     try:
         service = FinancialStandardizationService()
-        entities = service.recognize_entities(text, entity_types, api_key=api_key)
-        return {"entities": entities}
-    except Exception as e:
-        logger.error(f"Error recognizing financial entities: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/financial/standardize")
-async def standardize_financial_entity(
-    entity: str = Body(...),
-    entity_type: str = Body(...),
-    api_key: Optional[str] = Body(None)
-):
-    """标准化金融实体"""
-    try:
-        service = FinancialStandardizationService()
-        result = service.standardize_entity(entity, entity_type, api_key=api_key)
+        result = service.search_and_explain(text, api_key=api_key)
         return result
     except Exception as e:
-        logger.error(f"Error standardizing financial entity: {str(e)}")
+        logger.error(f"Error explaining financial term: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 
