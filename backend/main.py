@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from services.loading_service import LoadingService
 from services.chunking_service import ChunkingService
 from services.embedding_service import EmbeddingService, EmbeddingConfig
@@ -980,11 +981,13 @@ async def explain_financial_term(
     text: str = Body(...),
     api_key: Optional[str] = Body(None)
 ):
-    """搜索并解释金融术语"""
+    """搜索并解释金融术语 (流式)"""
     try:
         service = FinancialStandardizationService()
-        result = service.search_and_explain(text, api_key=api_key)
-        return result
+        return StreamingResponse(
+            service.search_and_explain_stream(text, api_key=api_key),
+            media_type="text/event-stream"
+        )
     except Exception as e:
         logger.error(f"Error explaining financial term: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

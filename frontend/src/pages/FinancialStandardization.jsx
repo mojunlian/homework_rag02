@@ -27,7 +27,7 @@ const FinancialStandardization = () => {
 
     setLoading(true);
     setError(null);
-    setResult(null);
+    setResult({ candidates: [], explanation: '' });
 
     try {
       const response = await fetch(`${apiBaseUrl}/financial/explain`, {
@@ -40,14 +40,39 @@ const FinancialStandardization = () => {
           api_key: apiKey
         })
       });
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      
-      const data = await response.json();
-      console.log('Backend response:', data);
-      setResult(data);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedExplanation = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        
+        // 处理候选词数据
+        if (chunk.startsWith('DATA: ')) {
+          try {
+            const dataStr = chunk.substring(6).split('\n\n')[0];
+            const data = JSON.parse(dataStr);
+            setResult(prev => ({ ...prev, candidates: data.candidates }));
+          } catch (e) {
+            console.error('Error parsing candidate data:', e);
+          }
+        } else if (chunk.startsWith('ERROR: ')) {
+          setError(chunk.substring(7));
+          break;
+        } else {
+          // 处理流式文本
+          accumulatedExplanation += chunk;
+          setResult(prev => ({ ...prev, explanation: accumulatedExplanation }));
+        }
+      }
     } catch (err) {
       console.error('Error explaining term:', err);
       setError('处理失败，请检查 API Key 或网络连接');
