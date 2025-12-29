@@ -40,7 +40,7 @@ logging.info(f"CSV file path: {file_path}")
 # 连接到 Milvus (本地部署，端口 19530)
 client = MilvusClient(uri="http://localhost:19530")
 
-collection_name = "financial_terms"
+collection_name = "financial_terms1"
 
 # 加载数据
 logging.info("Loading data from CSV")
@@ -125,7 +125,6 @@ for start_idx in tqdm(range(0, len(df), batch_size), desc="Processing batches"):
             collection_name=collection_name,
             data=data
         )
-        client.flush(collection_name)
         # logging.info(f"Inserted batch {start_idx // batch_size + 1}, result: {res}")
     except Exception as e:
         logging.error(f"Error inserting batch {start_idx // batch_size + 1}: {e}")
