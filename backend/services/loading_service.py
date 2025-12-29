@@ -1,24 +1,39 @@
 from pypdf import PdfReader
 from unstructured.partition.pdf import partition_pdf
+from unstructured.partition.auto import partition
 import pdfplumber
 import fitz  # PyMuPDF
 import logging
 import os
 from datetime import datetime
 import json
+from langchain_community.document_loaders import (
+    PyMuPDFLoader,
+    UnstructuredMarkdownLoader,
+    UnstructuredWordDocumentLoader,
+    PyPDFLoader,
+    TextLoader
+)
 
 logger = logging.getLogger(__name__)
 """
-PDF文档加载服务类
-    这个服务类提供了多种PDF文档加载方法，支持不同的加载策略和分块选项。
+文档加载服务类
+    这个服务类提供了多种文档加载方法，支持不同的加载策略和分块选项。
     主要功能：
-    1. 支持多种PDF解析库：
+    1. 支持多种解析库：
         - PyMuPDF (fitz): 适合快速处理大量PDF文件，性能最佳
         - PyPDF: 适合简单的PDF文本提取，依赖较少
         - pdfplumber: 适合需要处理表格或需要文本位置信息的场景
         - unstructured: 适合需要更好的文档结构识别和灵活分块策略的场景
+        - langchain: 使用langchain社区提供的多种加载器
     
-    2. 文档加载特性：
+    2. 支持多种文件格式：
+        - PDF (.pdf)
+        - Markdown (.md)
+        - Word (.docx, .doc)
+        - Text (.txt)
+    
+    3. 文档加载特性：
         - 保持页码信息
         - 支持文本分块
         - 提供元数据存储
@@ -26,10 +41,10 @@ PDF文档加载服务类
  """
 class LoadingService:
     """
-    PDF文档加载服务类，提供多种PDF文档加载和处理方法。
+    文档加载服务类，提供多种文档加载和处理方法。
     
     属性:
-        total_pages (int): 当前加载PDF文档的总页数
+        total_pages (int): 当前加载文档的总页数
         current_page_map (list): 存储当前文档的页面映射信息，每个元素包含页面文本和页码
     """
     
@@ -38,20 +53,26 @@ class LoadingService:
         self.current_page_map = []
     
     def load_pdf(self, file_path: str, method: str, strategy: str = None, chunking_strategy: str = None, chunking_options: dict = None) -> str:
+        """保持向后兼容的别名"""
+        return self.load_file(file_path, method, strategy, chunking_strategy, chunking_options)
+
+    def load_file(self, file_path: str, method: str, strategy: str = None, chunking_strategy: str = None, chunking_options: dict = None) -> str:
         """
-        加载PDF文档的主方法，支持多种加载策略。
+        加载文档的主方法，支持多种加载策略和文件格式。
 
         参数:
-            file_path (str): PDF文件路径
-            method (str): 加载方法，支持 'pymupdf', 'pypdf', 'pdfplumber', 'unstructured'
-            strategy (str, optional): 使用unstructured方法时的策略，可选 'fast', 'hi_res', 'ocr_only'
-            chunking_strategy (str, optional): 文本分块策略，可选 'basic', 'by_title'
+            file_path (str): 文件路径
+            method (str): 加载方法，支持 'pymupdf', 'pypdf', 'pdfplumber', 'unstructured', 'langchain'
+            strategy (str, optional): 使用unstructured方法时的策略
+            chunking_strategy (str, optional): 文本分块策略
             chunking_options (dict, optional): 分块选项配置
 
         返回:
             str: 提取的文本内容
         """
         try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+            
             if method == "pymupdf":
                 return self._load_with_pymupdf(file_path)
             elif method == "pypdf":
@@ -65,11 +86,45 @@ class LoadingService:
                     chunking_strategy=chunking_strategy,
                     chunking_options=chunking_options
                 )
+            elif method == "langchain":
+                return self._load_with_langchain(file_path)
             else:
                 raise ValueError(f"Unsupported loading method: {method}")
         except Exception as e:
-            logger.error(f"Error loading PDF with {method}: {str(e)}")
+            logger.error(f"Error loading file {file_path} with {method}: {str(e)}")
             raise
+    
+    def _load_with_langchain(self, file_path: str) -> str:
+        """使用LangChain加载器加载文档"""
+        file_ext = os.path.splitext(file_path)[1].lower()
+        loader = None
+        
+        if file_ext == ".pdf":
+            loader = PyMuPDFLoader(file_path)
+        elif file_ext == ".md":
+            loader = UnstructuredMarkdownLoader(file_path)
+        elif file_ext in [".docx", ".doc"]:
+            loader = UnstructuredWordDocumentLoader(file_path)
+        elif file_ext == ".txt":
+            loader = TextLoader(file_path, encoding='utf-8')
+        else:
+            # Fallback to Unstructured for other types
+            from langchain_community.document_loaders import UnstructuredFileLoader
+            loader = UnstructuredFileLoader(file_path)
+            
+        docs = loader.load()
+        text_blocks = []
+        for i, doc in enumerate(docs, 1):
+            page_num = doc.metadata.get("page", i)
+            text_blocks.append({
+                "text": doc.page_content.strip(),
+                "page": page_num,
+                "metadata": doc.metadata
+            })
+            
+        self.total_pages = len(docs)
+        self.current_page_map = text_blocks
+        return "\n".join(block["text"] for block in text_blocks)
     
     def get_total_pages(self) -> int:
         """
@@ -148,11 +203,11 @@ class LoadingService:
     
     def _load_with_unstructured(self, file_path: str, strategy: str = "fast", chunking_strategy: str = "basic", chunking_options: dict = None) -> str:
         """
-        使用unstructured库加载PDF文档。
+        使用unstructured库加载文档。
         适合需要更好的文档结构识别和灵活分块策略的场景。
 
         参数:
-            file_path (str): PDF文件路径
+            file_path (str): 文件路径
             strategy (str): 加载策略，默认'fast'
             chunking_strategy (str): 分块策略，默认'basic'
             chunking_options (dict): 分块选项配置
@@ -161,6 +216,8 @@ class LoadingService:
             str: 提取的文本内容
         """
         try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+            
             strategy_params = {
                 "fast": {"strategy": "fast"},
                 "hi_res": {"strategy": "hi_res"},
@@ -187,7 +244,25 @@ class LoadingService:
             # Combine strategy parameters with chunking parameters
             params = {**strategy_params.get(strategy, {"strategy": "fast"}), **chunking_params}
             
-            elements = partition_pdf(file_path, **params)
+            # Use partition for general files, partition_pdf specifically for PDFs if needed
+            try:
+                if file_ext == ".pdf":
+                    elements = partition_pdf(file_path, **params)
+                else:
+                    elements = partition(file_path, **params)
+            except Exception as e:
+                # Fallback if hi_res fails due to model download issues
+                if params.get("strategy") == "hi_res" and ("locate the file on the Hub" in str(e) or "Internet connection" in str(e)):
+                    logger.warning(f"Hi-res loading failed due to network issues. Falling back to 'fast' strategy. Error: {str(e)}")
+                    params["strategy"] = "fast"
+                    # Remove infer_table_structure as it's not supported in fast strategy
+                    params.pop("infer_table_structure", None)
+                    if file_ext == ".pdf":
+                        elements = partition_pdf(file_path, **params)
+                    else:
+                        elements = partition(file_path, **params)
+                else:
+                    raise e
             
             # Add debug logging
             for elem in elements:
@@ -271,7 +346,7 @@ class LoadingService:
         保存处理后的文档数据。
 
         参数:
-            filename (str): 原PDF文件名
+            filename (str): 原文件名
             chunks (list): 文档分块列表
             metadata (dict): 文档元数据
             loading_method (str): 使用的加载方法
@@ -283,7 +358,7 @@ class LoadingService:
         """
         try:
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-            base_name = filename.replace('.pdf', '').split('_')[0]
+            base_name = os.path.splitext(filename)[0].split('_')[0]
             
             # Adjust the document name to include strategy if unstructured
             if loading_method == "unstructured" and strategy:

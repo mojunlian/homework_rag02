@@ -11,7 +11,8 @@ const Sidebar = () => {
     { to: "/embedding", text: "Embedding File" },
     { to: "/indexing", text: "Indexing with Vector DB" },
     { to: "/search", text: "Similarity Search" },
-    { to: "/generation", text: "Generation" }
+    { to: "/generation", text: "Generation" },
+    { to: "/financial-standardization", text: "Financial Term Standardization" }
   ];
 
   return (

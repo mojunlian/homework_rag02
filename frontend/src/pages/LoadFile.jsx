@@ -36,6 +36,18 @@ const LoadFile = () => {
     }
   };
 
+  const handleFileSelect = (e) => {
+    const selectedFile = e.target.files[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      
+      // Auto-switch loading method for non-PDF files
+      if (!selectedFile.name.toLowerCase().endsWith('.pdf')) {
+        setLoadingMethod('langchain');
+      }
+    }
+  };
+
   const handleProcess = async () => {
     if (!file || !loadingMethod) {
       setStatus('Please select all required options');
@@ -236,11 +248,11 @@ const LoadFile = () => {
         <div className="col-span-3 space-y-4">
           <div className="p-4 border rounded-lg bg-white shadow-sm">
             <div>
-              <label className="block text-sm font-medium mb-1">Upload PDF</label>
+              <label className="block text-sm font-medium mb-1">Upload File (PDF/MD/DOCX/TXT)</label>
               <input
                 type="file"
-                accept=".pdf"
-                onChange={(e) => setFile(e.target.files[0])}
+                accept=".pdf,.md,.docx,.doc,.txt"
+                onChange={handleFileSelect}
                 className="block w-full border rounded px-3 py-2"
               />
             </div>
@@ -252,9 +264,11 @@ const LoadFile = () => {
                 onChange={(e) => setLoadingMethod(e.target.value)}
                 className="block w-full p-2 border rounded"
               >
+                <option value="langchain">LangChain (Multi-format)</option>
                 <option value="pymupdf">PyMuPDF</option>
                 <option value="pypdf">PyPDF</option>
                 <option value="unstructured">Unstructured</option>
+                <option value="pdfplumber">PDF Plumber</option>
               </select>
             </div>
 

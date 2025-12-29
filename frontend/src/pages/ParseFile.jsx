@@ -50,8 +50,13 @@ const ParseFile = () => {
     const file = e.target.files[0];
     if (file) {
       setFile(file);
-      const baseName = file.name.replace('.pdf', '');
+      const baseName = file.name.split('.').slice(0, -1).join('.');
       setDocName(baseName);
+      
+      // Auto-switch loading method for non-PDF files
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
+        setLoadingMethod('langchain');
+      }
     }
   };
 
@@ -64,10 +69,10 @@ const ParseFile = () => {
         <div className="col-span-3 space-y-4">
           <div className="p-4 border rounded-lg bg-white shadow-sm">
             <div>
-              <label className="block text-sm font-medium mb-1">Upload PDF</label>
+              <label className="block text-sm font-medium mb-1">Upload File (PDF/MD/DOCX)</label>
               <input
                 type="file"
-                accept=".pdf"
+                accept=".pdf,.md,.docx"
                 onChange={handleFileSelect}
                 className="block w-full border rounded px-3 py-2"
                 required
@@ -81,6 +86,7 @@ const ParseFile = () => {
                 onChange={(e) => setLoadingMethod(e.target.value)}
                 className="block w-full p-2 border rounded"
               >
+                <option value="langchain">LangChain (Multi-format)</option>
                 <option value="pymupdf">PyMuPDF</option>
                 <option value="pypdf">PyPDF</option>
                 <option value="unstructured">Unstructured</option>
@@ -98,7 +104,8 @@ const ParseFile = () => {
                 <option value="all_text">All Text</option>
                 <option value="by_pages">By Pages</option>
                 <option value="by_titles">By Titles</option>
-                <option value="text_and_tables">Text and Tables</option>
+                <option value="text_and_tables">Text and Tables (pdfplumber)</option>
+                <option value="hi_res">Hi-Res (Unstructured - Tables/Images)</option>
               </select>
             </div>
 

@@ -9,11 +9,12 @@ import Indexing from './pages/Indexing';
 import Search from './pages/Search';
 import ParseFile from './pages/ParseFile';
 import Generation from './pages/Generation';
+import FinancialStandardization from './pages/FinancialStandardization';
 
 const App = () => {
   return (
     <Router>
-      <div className="flex">
+      <div className="flex w-full">
         <Sidebar />
         <main className="ml-64 flex-1 min-h-screen bg-gray-100">
           <Routes>
@@ -24,6 +25,7 @@ const App = () => {
             <Route path="/indexing" element={<Indexing />} />
             <Route path="/search" element={<Search />} />
             <Route path="/generation" element={<Generation />} />
+            <Route path="/financial-standardization" element={<FinancialStandardization />} />
             <Route path="/" element={<LoadFile />} />
           </Routes>
         </main>

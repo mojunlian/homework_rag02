@@ -15,6 +15,7 @@ from utils.config import VectorDBProvider
 import pandas as pd
 from pathlib import Path
 from services.generation_service import GenerationService
+from services.financial_standardization_service import FinancialStandardizationService
 from typing import List, Dict, Optional
 
 # 设置日志
@@ -62,7 +63,7 @@ async def process_file(
         }
         
         loading_service = LoadingService()
-        raw_text = loading_service.load_pdf(temp_path, loading_method)
+        raw_text = loading_service.load_file(temp_path, loading_method)
         metadata["total_pages"] = loading_service.get_total_pages()
         
         page_map = loading_service.get_page_map()
@@ -569,17 +570,18 @@ async def parse_file(
         }
         
         loading_service = LoadingService()
-        raw_text = loading_service.load_pdf(temp_path, loading_method)
+        raw_text = loading_service.load_file(temp_path, loading_method)
         metadata["total_pages"] = loading_service.get_total_pages()
         
         page_map = loading_service.get_page_map()
         
         parsing_service = ParsingService()
-        parsed_content = parsing_service.parse_pdf(
+        parsed_content = parsing_service.parse_file(
             raw_text, 
             parsing_option, 
             metadata,
-            page_map=page_map
+            page_map=page_map,
+            file_path=temp_path
         )
         
         # Clean up temp file
@@ -623,7 +625,7 @@ async def load_file(
         
         # 使用 LoadingService 加载文档
         loading_service = LoadingService()
-        raw_text = loading_service.load_pdf(
+        raw_text = loading_service.load_file(
             temp_path, 
             loading_method, 
             strategy=strategy,
@@ -680,6 +682,7 @@ async def chunk_document(data: dict = Body(...)):
         doc_id = data.get("doc_id")
         chunking_option = data.get("chunking_option")
         chunk_size = data.get("chunk_size", 1000)
+        chunk_overlap = data.get("chunk_overlap", 200)
         
         if not doc_id or not chunking_option:
             raise HTTPException(
@@ -698,7 +701,7 @@ async def chunk_document(data: dict = Body(...)):
         # 构建页面映射
         page_map = [
             {
-                'page': chunk['metadata']['page_number'],
+                'page': chunk['metadata'].get('page_number', 1),
                 'text': chunk['content']
             }
             for chunk in doc_data['chunks']
@@ -713,11 +716,12 @@ async def chunk_document(data: dict = Body(...)):
             
         chunking_service = ChunkingService()
         result = chunking_service.chunk_text(
-            text="",  # 不需要传递文本，因为我们使用 page_map
+            text=doc_data.get("raw_text", ""), # Use raw text if available for markdown
             method=chunking_option,
             metadata=metadata,
             page_map=page_map,
-            chunk_size=chunk_size
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
         )
         
         # 生成输出文件名
@@ -968,4 +972,46 @@ async def get_search_result(file_id: str):
             
     except Exception as e:
         logger.error(f"Error reading search result file: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e)) 
+
+# 金融术语标准化相关接口
+@app.get("/financial/types")
+async def get_financial_types():
+    """获取金融术语类型"""
+    try:
+        service = FinancialStandardizationService()
+        types = service.get_entity_types()
+        return {"types": types}
+    except Exception as e:
+        logger.error(f"Error getting financial types: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/financial/recognize")
+async def recognize_financial_entities(
+    text: str = Body(...),
+    entity_types: List[str] = Body(None),
+    api_key: Optional[str] = Body(None)
+):
+    """识别金融实体"""
+    try:
+        service = FinancialStandardizationService()
+        entities = service.recognize_entities(text, entity_types, api_key=api_key)
+        return {"entities": entities}
+    except Exception as e:
+        logger.error(f"Error recognizing financial entities: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/financial/standardize")
+async def standardize_financial_entity(
+    entity: str = Body(...),
+    entity_type: str = Body(...),
+    api_key: Optional[str] = Body(None)
+):
+    """标准化金融实体"""
+    try:
+        service = FinancialStandardizationService()
+        result = service.standardize_entity(entity, entity_type, api_key=api_key)
+        return result
+    except Exception as e:
+        logger.error(f"Error standardizing financial entity: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

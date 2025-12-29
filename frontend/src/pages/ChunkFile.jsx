@@ -7,6 +7,7 @@ const ChunkFile = () => {
   const [selectedDoc, setSelectedDoc] = useState('');
   const [chunkingOption, setChunkingOption] = useState('by_pages');
   const [chunkSize, setChunkSize] = useState(1000);
+  const [chunkOverlap, setChunkOverlap] = useState(200);
   const [chunks, setChunks] = useState(null);
   const [status, setStatus] = useState('');
   const [activeTab, setActiveTab] = useState('chunks');
@@ -89,6 +90,7 @@ const ChunkFile = () => {
           doc_id: docId,
           chunking_option: chunkingOption,
           chunk_size: chunkSize,
+          chunk_overlap: chunkOverlap,
         }),
       });
 
@@ -294,23 +296,39 @@ const ChunkFile = () => {
               >
                 <option value="by_pages">By Pages</option>
                 <option value="fixed_size">Fixed Size</option>
+                <option value="recursive">Recursive (LangChain)</option>
+                <option value="markdown">Markdown (Headers)</option>
+                <option value="token">Token Based</option>
                 <option value="by_paragraphs">By Paragraphs</option>
                 <option value="by_sentences">By Sentences</option>
               </select>
             </div>
 
-            {chunkingOption === 'fixed_size' && (
-              <div className="mb-4">
-                <label className="block text-sm font-medium mb-1">Chunk Size</label>
-                <input
-                  type="number"
-                  value={chunkSize}
-                  onChange={(e) => setChunkSize(Number(e.target.value))}
-                  className="block w-full p-2 border rounded"
-                  min="100"
-                  max="5000"
-                />
-              </div>
+            {['fixed_size', 'recursive', 'token'].includes(chunkingOption) && (
+              <>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium mb-1">Chunk Size</label>
+                  <input
+                    type="number"
+                    value={chunkSize}
+                    onChange={(e) => setChunkSize(Number(e.target.value))}
+                    className="block w-full p-2 border rounded"
+                    min="100"
+                    max="5000"
+                  />
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium mb-1">Chunk Overlap</label>
+                  <input
+                    type="number"
+                    value={chunkOverlap}
+                    onChange={(e) => setChunkOverlap(Number(e.target.value))}
+                    className="block w-full p-2 border rounded"
+                    min="0"
+                    max={Math.floor(chunkSize / 2)}
+                  />
+                </div>
+              </>
             )}
 
             <button 
